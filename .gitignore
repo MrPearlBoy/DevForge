@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# DevForge runtime artifacts
+workspaces/
+*.db
+.env
+
+# Editors
+.vscode/
+.idea/
+.DS_Store

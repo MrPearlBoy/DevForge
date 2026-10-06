@@ -1,0 +1,11 @@
+# DevForge backend — Python 3.11+
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30
+pydantic>=2.7,<3.0
+pydantic-settings>=2.3,<3.0
+sqlalchemy>=2.0,<3.0
+httpx>=0.27
+python-dotenv>=1.0
+# execution sandbox tooling (invoked via subprocess inside workspaces)
+pytest>=8.0
+bandit>=1.7
