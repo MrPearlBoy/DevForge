@@ -144,6 +144,11 @@ backend/.venv/bin/python scripts/test_loops.py
 | **DocA** Documentation | all artifacts | `README.md`, `docs/api.md`, `docs/architecture.md` | G6 |
 | **GitSync** Delivery | approved workspace | git init + commit on `main` + `.github/workflows/ci.yml` | — |
 
+The D4 loop keeps the original generated test suite unchanged and reruns it after each
+repair. The Coding Agent receives the failing tests, current implementation and pytest
+diagnostics; if it returns no implementation changes, the workflow stops with an explicit
+error instead of repeating the same failed run.
+
 ### Why the generated code is stdlib-only
 
 The Coding Agent is hard-constrained (prompt) to use only the Python standard library so the
@@ -167,13 +172,17 @@ self-healing loops deterministic and fast. The architecture itself is framework-
 
 | Env | Meaning |
 |---|---|
-| `LLM_PROVIDER` | `auto` (default) · `openai` · `groq` · `anthropic` · `mock` |
-| `OPENAI_API_KEY` / `GROQ_API_KEY` / `ANTHROPIC_API_KEY` | keys for the real providers |
-| `OPENAI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL` | model names (defaults: gpt-4o-mini / llama-3-3-70b-versatile / claude-3-5-sonnet-latest) |
+| `LLM_PROVIDER` | `auto` (default) · `openai` · `gemini` · `ollama` · `groq` · `anthropic` · `mock` |
+| `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OLLAMA_API_KEY` / `GROQ_API_KEY` / `ANTHROPIC_API_KEY` | keys for the real providers |
+| `OPENAI_MODEL` / `GEMINI_MODEL` / `OLLAMA_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL` | model names (defaults: gpt-4o-mini / gemini-2.5-flash / gpt-oss:120b-cloud / llama-3-3-70b-versatile / claude-3-5-sonnet-latest) |
 
-`auto` picks the first configured provider and **falls back to the mock provider** when no
-key exists (a warning is logged, and the provider in use is shown in the UI and on every
-snapshot). With a real provider, agent output is requested as strict JSON
+`auto` picks the first configured provider (OpenAI, then Gemini, Ollama, Groq and Anthropic) and
+**falls back to the mock provider** when no key exists (a warning is logged, and the
+provider in use is shown in the UI and on every snapshot). To choose Gemini when both
+OpenAI and Gemini keys are configured, set `LLM_PROVIDER=gemini`; use `LLM_PROVIDER=openai`
+to choose OpenAI. For Ollama Cloud, set `LLM_PROVIDER=ollama`, provide `OLLAMA_API_KEY`
+from your Ollama account, and set `OLLAMA_MODEL` to a model available to that account.
+With a real provider, agent output is requested as strict JSON
 (`response_format: json_object` where supported), parsed leniently, validated against the
 Pydantic schema, and **re-prompted once** with the validation errors if it fails.
 

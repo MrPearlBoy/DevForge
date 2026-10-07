@@ -149,6 +149,42 @@ class AnthropicClient(LLMClient):
             return "".join(block.get("text", "") for block in data.get("content", []))
 
 
+class GeminiClient(LLMClient):
+    """Client for Google's Gemini generateContent API."""
+
+    name = "gemini"
+
+    def __init__(self, api_key: str, model: str, timeout: float = 120.0) -> None:
+        super().__init__(timeout)
+        self.api_key = api_key
+        self.model = model
+
+    async def complete(self, system: str, user: str, kind: str = "generic") -> str:
+        generation_config: dict[str, Any] = {"temperature": 0.2}
+        if kind != "generic":
+            generation_config["responseMimeType"] = "application/json"
+        payload: dict[str, Any] = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": generation_config,
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent",
+                headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        text = "".join(part.get("text", "") for part in parts)
+        if not text:
+            raise ValueError("Gemini returned no text content")
+        return text
+
+
 class MockProvider(LLMClient):
     """Deterministic offline LLM.
 
@@ -193,7 +229,7 @@ def create_llm() -> LLMClient:
     """Instantiate the best available provider.
 
     * ``LLM_PROVIDER=mock``  → always the deterministic mock.
-    * ``LLM_PROVIDER=auto``  → first configured key (OpenAI → Groq → Anthropic),
+    * ``LLM_PROVIDER=auto``  → first configured key (OpenAI → Gemini → Ollama → Groq → Anthropic),
       falling back to the mock when none is configured.
     * explicit provider name → that provider if a key exists, else fallback
       to the mock (the "prompt fallback" behaviour).
@@ -205,6 +241,18 @@ def create_llm() -> LLMClient:
     if pref in ("auto", "openai") and s.openai_api_key:
         candidates.append(
             OpenAICompatClient("openai", "https://api.openai.com/v1", s.openai_api_key, s.openai_model, s.llm_timeout)
+        )
+    if pref in ("auto", "gemini") and s.gemini_api_key:
+        candidates.append(GeminiClient(s.gemini_api_key, s.gemini_model, s.llm_timeout))
+    if pref in ("auto", "ollama") and s.ollama_api_key:
+        candidates.append(
+            OpenAICompatClient(
+                "ollama",
+                "https://ollama.com/v1",
+                s.ollama_api_key,
+                s.ollama_model,
+                s.llm_timeout,
+            )
         )
     if pref in ("auto", "groq") and s.groq_api_key:
         candidates.append(
@@ -219,7 +267,8 @@ def create_llm() -> LLMClient:
     if not candidates:
         log.warning(
             "no LLM API key found for provider '%s' — falling back to the deterministic mock provider "
-            "(set OPENAI_API_KEY / GROQ_API_KEY / ANTHROPIC_API_KEY in backend/.env to use a real model)",
+            "(set OPENAI_API_KEY / GEMINI_API_KEY / OLLAMA_API_KEY / GROQ_API_KEY / "
+            "ANTHROPIC_API_KEY in backend/.env to use a real model)",
             pref,
         )
         return MockProvider()

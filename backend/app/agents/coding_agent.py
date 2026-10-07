@@ -24,9 +24,12 @@ HARD CONSTRAINTS:
    and error feedback. Use relative GUI asset and API URLs so the app also works when mounted
    below a URL prefix in DevForge's embedded preview. Do not use a placeholder page. Include
    documented run instructions.
-8. Mode "heal": fix the failing tests listed in the feedback precisely.
-   Mode "security": remediate the listed security findings while keeping the public API stable.
-   Mode "initial": produce the full codebase from scratch.
+8. Mode-specific behavior:
+   - "heal": use existing_files and TEST_FAILURES feedback to fix the implementation against
+     the existing test suite. Do not edit or regenerate files in tests/; preserve the tests as
+     the contract and return every changed file's complete content.
+   - "security": remediate the listed security findings while keeping the public API stable.
+   - "initial": produce the full codebase from scratch.
 9. Every public function gets a docstring; keep modules small and focused.
 
 Respond with a single JSON object only — no markdown fences, no commentary."""

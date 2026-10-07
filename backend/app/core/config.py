@@ -25,14 +25,18 @@ class Settings(BaseSettings):
     cors_origins: str = "*"
 
     # --- LLM engine ----------------------------------------------------
-    #: auto | openai | groq | anthropic | mock
+    #: auto | openai | gemini | ollama | groq | anthropic | mock
     #: "auto" picks the first provider with a configured API key and falls
     #: back to the deterministic offline mock provider when none exist.
     llm_provider: str = "auto"
     openai_api_key: str = ""
+    gemini_api_key: str = ""
+    ollama_api_key: str = ""
     groq_api_key: str = ""
     anthropic_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    gemini_model: str = "gemini-2.5-flash"
+    ollama_model: str = "gpt-oss:120b-cloud"
     groq_model: str = "llama-3-3-70b-versatile"
     anthropic_model: str = "claude-3-5-sonnet-latest"
     llm_timeout: float = 120.0

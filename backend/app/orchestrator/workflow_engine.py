@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from app.agents.architecture_agent import ArchitectureAgent
@@ -54,7 +55,7 @@ from app.orchestrator.state import (
     WorkflowState,
 )
 from app.streaming.bus import get_bus
-from app.utils.files import safe_write, workspace_root
+from app.utils.files import file_tree, read_file_safe, safe_write, workspace_root
 from app.utils.render import render_architecture_md, render_api_schema_json, render_requirements_md
 
 log = logging.getLogger("devforge.engine")
@@ -79,6 +80,43 @@ def discard_engine(project_id: str) -> None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_files_for_healing(workspace, max_chars: int = 80000) -> list[dict[str, str]]:
+    """Read the current implementation and tests for a bounded coding-agent repair prompt."""
+    entries = [
+        entry
+        for entry in file_tree(workspace)
+        if entry["path"] == "conftest.py"
+        or (
+            entry["path"].startswith(("src/", "web/", "tests/"))
+            and Path(entry["path"]).suffix.lower() in {".py", ".js", ".html", ".css"}
+        )
+    ]
+    entries.sort(key=lambda entry: (0 if entry["path"].startswith("tests/") else 1, entry["path"]))
+
+    files: list[dict[str, str]] = []
+    used_chars = 0
+    omitted = 0
+    for entry in entries:
+        content = read_file_safe(workspace, entry["path"])
+        remaining = max_chars - used_chars
+        if remaining <= 0:
+            omitted += 1
+            continue
+        if len(content) > remaining:
+            content = content[:remaining] + "\n[truncated: healing context limit reached]"
+            omitted += 1
+        files.append({"path": entry["path"], "content": content})
+        used_chars += len(content)
+    if omitted:
+        files.append(
+            {
+                "path": "[context note]",
+                "content": f"{omitted} file(s) were omitted or truncated to fit the healing context limit.",
+            }
+        )
+    return files
 
 
 class WorkflowEngine:
@@ -375,7 +413,7 @@ class WorkflowEngine:
         elif feedback:
             mode = "heal"
         await self._emit("stage", f"Coding Agent starting (mode={mode})")
-        ctx = {
+        ctx: dict[str, Any] = {
             "task": self.task,
             "project_name": self.name,
             "requirements": st.requirement.model_dump() if st.requirement else None,
@@ -384,13 +422,60 @@ class WorkflowEngine:
             "feedback": feedback or None,
             "previous_files": [f.path for f in st.code.files] if st.code else [],
         }
+        if mode in ("heal", "security"):
+            ctx["existing_files"] = _read_files_for_healing(workspace_root(self.project_id))
         artifact = await CodingAgent().run(ctx, self._emit, self.client)
         if not artifact.files:
             await self._fail("Coding Agent produced no files")
             return
+
+        previous_code = st.code
+        previous_files = {f.path: f for f in previous_code.files} if previous_code else {}
+        updated_files = []
+        ignored_tests = []
+        for generated_file in artifact.files:
+            path = generated_file.path.replace("\\", "/")
+            if mode in ("heal", "security") and path.startswith("tests/"):
+                ignored_tests.append(path)
+                continue
+            updated_files.append(generated_file.model_copy(update={"path": path}))
+
+        if ignored_tests:
+            await self._emit(
+                "warn",
+                "Coding Agent attempted to change the test suite during a repair; test files were kept unchanged.",
+                {"files": ignored_tests},
+            )
+
+        if mode == "heal":
+            changed_implementation = any(
+                generated_file.path.startswith(("src/", "web/"))
+                and (
+                    generated_file.path not in previous_files
+                    or previous_files[generated_file.path].content != generated_file.content
+                )
+                for generated_file in updated_files
+            )
+            if not changed_implementation:
+                provider_note = (
+                    " The selected deterministic mock provider cannot make test-specific code changes; "
+                    "configure a working LLM provider to enable automatic repair."
+                    if self.client and self.client.name == "mock"
+                    else ""
+                )
+                await self._fail(
+                    "Coding Agent made no implementation changes in response to the failing tests; "
+                    "stopping instead of rerunning the same failing suite." + provider_note
+                )
+                return
+
+        merged_files = dict(previous_files)
+        merged_files.update({generated_file.path: generated_file for generated_file in updated_files})
+        artifact.files = [merged_files[path] for path in sorted(merged_files)]
+
         st.code = artifact
         ws = workspace_root(self.project_id)
-        for f in artifact.files:
+        for f in updated_files:
             safe_write(ws, f.path, f.content)
             await self._emit("file", f"wrote {f.path} ({len(f.content)} chars)", {"path": f.path})
         st.feedback.pop("code", None)
@@ -421,21 +506,36 @@ class WorkflowEngine:
         st.stage = "testing"
         st.status = "running"
         self._sync()
-        await self._emit("stage", "Testing Agent generating test suite")
-        ctx = {
-            "project_name": self.name,
-            "requirements": st.requirement.model_dump() if st.requirement else None,
-            "architecture": st.architecture.model_dump() if st.architecture else None,
-            "files": [{"path": f.path, "content": f.content} for f in (st.code.files if st.code else [])],
-        }
-        tests = await TestingAgent().run(ctx, self._emit, self.client)
-        if not tests.files:
-            await self._fail("Testing Agent produced no test files")
-            return
         ws = workspace_root(self.project_id)
-        for f in tests.files:
-            safe_write(ws, f.path, f.content)
-            await self._emit("file", f"wrote {f.path} ({len(f.content)} chars)", {"path": f.path})
+        if st.tests is None:
+            await self._emit("stage", "Testing Agent generating test suite")
+            ctx = {
+                "project_name": self.name,
+                "requirements": st.requirement.model_dump() if st.requirement else None,
+                "architecture": st.architecture.model_dump() if st.architecture else None,
+                "files": [{"path": f.path, "content": f.content} for f in (st.code.files if st.code else [])],
+            }
+            tests = await TestingAgent().run(ctx, self._emit, self.client)
+            if not tests.files:
+                await self._fail("Testing Agent produced no test files")
+                return
+            for f in tests.files:
+                safe_write(ws, f.path, f.content)
+                await self._emit("file", f"wrote {f.path} ({len(f.content)} chars)", {"path": f.path})
+        else:
+            test_files = [
+                entry["path"]
+                for entry in file_tree(ws)
+                if entry["path"].startswith("tests/") and entry["path"].endswith(".py")
+            ]
+            if not test_files:
+                await self._fail("Previously generated test suite is missing; cannot safely continue a repair run")
+                return
+            await self._emit(
+                "stage",
+                "Reusing the existing test suite to verify the code repair",
+                {"test_files": test_files},
+            )
 
         await self._emit("tests", "Decision loop D4: executing pytest in the sandbox…", {})
         report = await asyncio.to_thread(runner.run_pytest, ws, settings.test_timeout)
@@ -476,9 +576,10 @@ class WorkflowEngine:
             st.iterations["test_heals"] = heals
             st.feedback["code"] = (
                 "TEST_FAILURES:\n"
+                + f"Summary: {report['summary']}\n"
                 + "\n".join(report["failures"][:8])
-                + "\nOutput tail:\n"
-                + report["output"][-4000:]
+                + "\nPytest diagnostics:\n"
+                + report["output"][-12000:]
             )
             st.skip_code_gate = True
             st.stage = "coding"

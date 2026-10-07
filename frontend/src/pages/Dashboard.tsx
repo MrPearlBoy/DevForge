@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle2,
   ClipboardList,
+  ClipboardCheck,
   Code2,
   Eye,
   FlaskConical,
@@ -46,6 +47,13 @@ const ROLE_DEFAULT_TAB: Record<Role, TabKey> = {
   architect: "specs",
   tester: "tests",
   pm: "audit",
+};
+
+const GATE_LABELS: Record<string, string> = {
+  requirement: "Requirements",
+  architecture: "Architecture",
+  code: "Code",
+  docs: "Documentation",
 };
 
 const TABS: { key: TabKey; label: string; icon: typeof Code2 }[] = [
@@ -111,6 +119,12 @@ export default function Dashboard() {
     });
   }, [refreshProjects]);
 
+  // Keep the approval queue current even when no project is selected.
+  useEffect(() => {
+    const poll = window.setInterval(() => refreshProjects(), 6000);
+    return () => window.clearInterval(poll);
+  }, [refreshProjects]);
+
   // stream + polling for the selected project
   useEffect(() => {
     if (!selectedId) {
@@ -128,7 +142,6 @@ export default function Dashboard() {
       if (cancelled) return;
       if (s) {
         setEvents(s.events);
-        setModalGate(s.awaiting_gate);
       }
     });
 
@@ -138,8 +151,8 @@ export default function Dashboard() {
         const next = [...prev, e];
         return next.length > 500 ? next.slice(next.length - 500) : next;
       });
-      if (e.type === "approval_requested") setModalGate((e.payload?.gate as string) ?? null);
       if (e.type === "approval_recorded") setModalGate(null);
+      if (e.type === "approval_requested" || e.type === "approval_recorded") refreshProjects();
       if (["file", "git", "done", "error", "artifact"].includes(e.type)) refreshSnapshot(selectedId);
     });
     stream.connect();
@@ -249,6 +262,15 @@ export default function Dashboard() {
     }
   };
 
+  const openApproval = (projectId: string, gate: string) => {
+    if (projectId === selectedId) {
+      setModalGate(gate);
+      return;
+    }
+    setModalGate(null);
+    setSelectedId(projectId);
+  };
+
   const snapStage = snap?.stage ?? "created";
   const snapStatus = snap?.status ?? "idle";
   const started = !["created", "idle"].includes(snapStage) || ["running", "waiting_approval", "completed", "failed", "interrupted"].includes(snapStatus);
@@ -337,7 +359,7 @@ export default function Dashboard() {
       />
 
       {/* ── main grid ──────────────────────────────────────────── */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[1fr_400px]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_400px]">
         <section className="panel flex min-h-[520px] flex-col p-3">
           {!snap && (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-slate-600">
@@ -407,9 +429,12 @@ export default function Dashboard() {
         </section>
 
         {/* live logs */}
-        <aside className="panel min-h-[320px] p-1 xl:min-h-0">
-          <div className="flex h-full min-h-[300px] p-1.5">
-            <LogsConsole events={events} />
+        <aside className="flex min-h-[520px] flex-col gap-4 xl:min-h-0">
+          <ApprovalQueue projects={projects} selectedId={selectedId} onOpen={openApproval} />
+          <div className="panel flex min-h-[280px] flex-1 p-1 xl:min-h-0">
+            <div className="flex min-h-0 flex-1 p-1.5">
+              <LogsConsole events={events} />
+            </div>
           </div>
         </aside>
       </div>
@@ -420,10 +445,8 @@ export default function Dashboard() {
           gate={modalGate}
           summary={gateSummary(snap, modalGate)}
           busy={modalBusy}
-          logs={events
-            .filter((e) => !["state", "approval_requested", "approval_recorded"].includes(e.type))
-            .slice(-8)
-            .map((e) => ({ type: e.type, message: e.message }))}
+          logs={approvalAgentLogs(events, modalGate)}
+          onClose={() => setModalGate(null)}
           onDecide={decide}
         />
       )}
@@ -470,6 +493,86 @@ export default function Dashboard() {
 }
 
 /* ──────────────────────────────────────────────────────────────────────── */
+
+function ApprovalQueue({
+  projects,
+  selectedId,
+  onOpen,
+}: {
+  projects: ProjectSnapshot[];
+  selectedId: string | null;
+  onOpen: (projectId: string, gate: string) => void;
+}) {
+  const pending = projects.filter((project) => project.status === "waiting_approval" && project.awaiting_gate);
+
+  return (
+    <section className="panel flex max-h-[280px] min-h-[180px] flex-col p-3">
+      <header className="mb-3 flex items-center gap-2">
+        <ClipboardCheck size={16} className="text-amber-300" />
+        <h2 className="text-sm font-semibold text-slate-200">Approval requests</h2>
+        <span className="ml-auto rounded-full bg-amber-400/15 px-2 py-0.5 text-[11px] font-medium text-amber-300">
+          {pending.length} pending
+        </span>
+      </header>
+      <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
+        {pending.length === 0 && (
+          <p className="rounded-lg border border-dashed border-ink-700 px-3 py-5 text-center text-xs text-slate-500">
+            Approval requests from all projects will appear here.
+          </p>
+        )}
+        {pending.map((project) => {
+          const gate = project.awaiting_gate;
+          if (!gate) return null;
+          return (
+            <button
+              key={project.id}
+              onClick={() => onOpen(project.id, gate)}
+              className={`w-full rounded-lg border p-3 text-left transition-colors ${
+                selectedId === project.id
+                  ? "border-amber-400/40 bg-amber-400/10"
+                  : "border-ink-700 bg-ink-950/60 hover:border-amber-400/30 hover:bg-ink-800/70"
+              }`}
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="truncate text-xs font-semibold text-slate-200">{project.name}</span>
+                <span className="shrink-0 rounded bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                  {GATE_LABELS[gate] ?? gate}
+                </span>
+              </span>
+              <span className="mt-1 block truncate text-[11px] text-slate-500">{project.task}</span>
+              <span className="mt-2 flex items-center gap-1 text-[11px] font-medium text-amber-300">
+                Review agent log and decide
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function approvalAgentLogs(events: StreamEvent[], gate: string) {
+  const stageByGate: Record<string, string> = {
+    requirement: "requirement",
+    architecture: "architecture",
+    code: "coding",
+    docs: "documentation",
+  };
+  const stage = stageByGate[gate];
+  const gateEvents = events.filter(
+    (event) => event.stage === stage && !["state", "approval_requested", "approval_recorded"].includes(event.type),
+  );
+  const selectedEvents = gateEvents.length
+    ? gateEvents
+    : events.filter((event) => !["state", "approval_requested", "approval_recorded"].includes(event.type)).slice(-12);
+
+  return selectedEvents.map((event) => ({
+    type: event.type,
+    message: event.message,
+    ts: event.ts,
+    detail: typeof event.payload?.output === "string" ? event.payload.output : null,
+  }));
+}
 
 function gateSummary(snap: ProjectSnapshot, gate: string): string {
   const a = snap.artifacts;

@@ -27,6 +27,8 @@ const GATE_INFO: Record<string, { title: string; description: string; hint: stri
 interface LogLine {
   type: string;
   message: string;
+  ts?: string | null;
+  detail?: string | null;
 }
 
 interface Props {
@@ -34,10 +36,11 @@ interface Props {
   summary: string;
   busy?: boolean;
   logs?: LogLine[];
+  onClose: () => void;
   onDecide: (gate: string, decision: "approved" | "rejected" | "changes_requested", comment: string) => void;
 }
 
-export default function ApprovalModal({ gate, summary, busy, logs = [], onDecide }: Props) {
+export default function ApprovalModal({ gate, summary, busy, logs = [], onClose, onDecide }: Props) {
   const [decision, setDecision] = useState<"approved" | "rejected" | "changes_requested" | null>(null);
   const [comment, setComment] = useState("");
   const info = GATE_INFO[gate] ?? {
@@ -50,9 +53,9 @@ export default function ApprovalModal({ gate, summary, busy, logs = [], onDecide
   const canSubmit = decision !== null && (!needsComment || comment.trim().length > 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="panel w-full max-w-lg border-amber-400/30 p-5">
-        <div className="flex items-start gap-3">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden border-amber-400/30 p-5">
+        <div className="flex shrink-0 items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-400/15 text-amber-300">
             <GitPullRequest size={20} />
           </div>
@@ -67,27 +70,34 @@ export default function ApprovalModal({ gate, summary, busy, logs = [], onDecide
           </div>
           <button
             className="ml-auto rounded-md p-1 text-slate-500 hover:bg-ink-800 hover:text-slate-300"
-            onClick={() => {
-              setDecision(null);
-              setComment("");
-            }}
-            title="minimize (workflow keeps waiting)"
+            onClick={onClose}
+            title="Close review (approval remains pending)"
+            aria-label="Close approval review"
           >
             <X size={16} />
           </button>
         </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {logs.length > 0 && (
           <div className="mt-4 rounded-lg border border-ink-700 bg-ink-950 p-3">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">What the agent already did</p>
-              <span className="text-[10px] text-slate-500">{logs.length} recent events</span>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Agent activity for this gate</p>
+              <span className="text-[10px] text-slate-500">{logs.length} events</span>
             </div>
-            <div className="max-h-36 space-y-1.5 overflow-y-auto pr-1">
+            <div className="max-h-[35vh] space-y-1.5 overflow-y-auto pr-1">
               {logs.map((entry, index) => (
                 <div key={`${entry.type}-${index}`} className="rounded-md border border-ink-800 bg-ink-900/60 px-2 py-1.5">
-                  <div className="mb-0.5 text-[10px] uppercase tracking-wide text-slate-500">{entry.type}</div>
+                  <div className="mb-0.5 flex items-center gap-2 text-[10px] uppercase tracking-wide text-slate-500">
+                    <span>{entry.type}</span>
+                    {entry.ts && <span className="normal-case">{new Date(entry.ts).toLocaleString()}</span>}
+                  </div>
                   <div className="text-xs text-slate-300">{entry.message}</div>
+                  {entry.detail && (
+                    <pre className="mt-1 whitespace-pre-wrap break-words rounded bg-ink-950/80 p-2 font-mono text-[11px] leading-relaxed text-slate-400">
+                      {entry.detail}
+                    </pre>
+                  )}
                 </div>
               ))}
             </div>
@@ -114,8 +124,9 @@ export default function ApprovalModal({ gate, summary, busy, logs = [], onDecide
           }
           className="mt-4 w-full resize-none rounded-lg border border-ink-700 bg-ink-950 p-3 text-sm text-slate-200 placeholder:text-slate-600 focus:border-indigo-500 focus:outline-none"
         />
+        </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 border-t border-ink-700/60 pt-3">
           <button
             className={`btn ${
               decision === "approved"
@@ -164,12 +175,16 @@ export default function ApprovalModal({ gate, summary, busy, logs = [], onDecide
           </div>
         </div>
 
-        {needsComment && comment.trim().length === 0 && (
-          <p className="mt-2 flex items-center gap-1.5 text-xs text-rose-400">
-            <AlertTriangle size={13} /> A comment is required — it is injected into the agent's next prompt.
-          </p>
+        {(needsComment && comment.trim().length === 0 || info.hint) && (
+          <div className="shrink-0">
+            {needsComment && comment.trim().length === 0 && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-rose-400">
+                <AlertTriangle size={13} /> A comment is required — it is injected into the agent's next prompt.
+              </p>
+            )}
+            {info.hint && <p className="mt-2 text-[11px] text-slate-500">{info.hint}</p>}
+          </div>
         )}
-        {info.hint && <p className="mt-3 text-[11px] text-slate-500">{info.hint}</p>}
       </div>
     </div>
   );
